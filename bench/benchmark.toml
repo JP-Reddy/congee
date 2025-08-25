@@ -45,3 +45,11 @@ time = 3
 dataset_size = [100000]
 format = ["CongeeCompactSet", "CongeeSet"]
 key_pattern = ["Sequential"]
+
+[[CompactComparison]]
+name = "compact-comparison"
+threads = [1,2]
+time = 3
+workload = ["ReadOnly"]
+index_type = ["CongeeCompactSet", "CongeeSet"]
+dataset_size = [1000000]

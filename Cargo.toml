@@ -48,6 +48,11 @@ name = "compact_set"
 path = "bench/compact_set.rs"
 harness = false
 
+[[bench]]
+name = "compact_comparison"
+path = "bench/compact_comparison.rs"
+harness = false
+
 [features]
 flamegraph = ["shumai/flamegraph"]
 perf = ["shumai/perf"]
