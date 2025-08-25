@@ -776,12 +776,119 @@ where
             let prefix_start = offset + 4;
             let prefix = &self.data[prefix_start..prefix_start + prefix_len];
 
+            // Convert node type number to readable name
+            let node_type_name = match header.node_type {
+                NodeType::N4_INTERNAL => "N4_INTERNAL",
+                NodeType::N16_INTERNAL => "N16_INTERNAL", 
+                NodeType::N48_INTERNAL => "N48_INTERNAL",
+                NodeType::N256_INTERNAL => "N256_INTERNAL",
+                NodeType::N4_LEAF => "N4_LEAF",
+                NodeType::N16_LEAF => "N16_LEAF",
+                NodeType::N48_LEAF => "N48_LEAF",
+                NodeType::N256_LEAF => "N256_LEAF",
+                _ => "UNKNOWN",
+            };
+
             println!(
-                "Node[{}] @ offset {}: type={}, prefix={:?}, children={}",
-                node_index, offset, header.node_type, prefix, children_len
+                "Node[{}] @ offset {}: type={} ({}), prefix={:?}, children={}",
+                node_index, offset, header.node_type, node_type_name, prefix, children_len
             );
 
-            println!("  -> {} children", children_len);
+            let children_start = offset + 4 + prefix_len;
+
+            // Print children details based on node type
+            match header.node_type {
+                NodeType::N4_INTERNAL | NodeType::N16_INTERNAL => {
+                    // Format: [keys][offsets] 
+                    print!("  -> Keys: [");
+                    for i in 0..children_len {
+                        if i > 0 { print!(", "); }
+                        print!("{}", self.data[children_start + i]);
+                    }
+                    println!("]");
+                    print!("  -> Offsets: [");
+                    let offset_start = children_start + children_len;
+                    for i in 0..children_len {
+                        if i > 0 { print!(", "); }
+                        let offset_bytes = &self.data[offset_start + i * 4..offset_start + (i + 1) * 4];
+                        let child_offset = u32::from_le_bytes(offset_bytes.try_into().unwrap());
+                        print!("{}", child_offset);
+                    }
+                    println!("]");
+                }
+                NodeType::N4_LEAF | NodeType::N16_LEAF => {
+                    // Format: [keys]
+                    print!("  -> Leaf Keys: [");
+                    for i in 0..children_len {
+                        if i > 0 { print!(", "); }
+                        print!("{}", self.data[children_start + i]);
+                    }
+                    println!("]");
+                }
+                NodeType::N48_INTERNAL => {
+                    // Format: [256 byte key array][children_len * 4 byte offsets]
+                    println!("  -> Key Array (256 bytes): [showing non-zero entries]");
+                    for i in 0..256 {
+                        let val = self.data[children_start + i];
+                        if val != 0 {
+                            println!("    key_array[{}] = {}", i, val);
+                        }
+                    }
+                    print!("  -> Child Offsets: [");
+                    let offset_start = children_start + 256;
+                    for i in 0..children_len {
+                        if i > 0 { print!(", "); }
+                        let offset_bytes = &self.data[offset_start + i * 4..offset_start + (i + 1) * 4];
+                        let child_offset = u32::from_le_bytes(offset_bytes.try_into().unwrap());
+                        print!("{}", child_offset);
+                    }
+                    println!("]");
+                }
+                NodeType::N48_LEAF => {
+                    // Format: [32 byte bitmap]
+                    println!("  -> Bitmap (32 bytes): [showing set bits]");
+                    for byte_idx in 0..32 {
+                        let bitmap_byte = self.data[children_start + byte_idx];
+                        if bitmap_byte != 0 {
+                            for bit_idx in 0..8 {
+                                if (bitmap_byte & (1u8 << bit_idx)) != 0 {
+                                    let key_value = byte_idx * 8 + bit_idx;
+                                    println!("    bit[{}] set (key={})", key_value, key_value);
+                                }
+                            }
+                        }
+                    }
+                }
+                NodeType::N256_INTERNAL => {
+                    // Format: [256 * 4 byte direct offsets]
+                    println!("  -> Direct Offsets (256 * 4 bytes): [showing non-zero entries]");
+                    for i in 0..256 {
+                        let offset_bytes = &self.data[children_start + i * 4..children_start + (i + 1) * 4];
+                        let child_offset = u32::from_le_bytes(offset_bytes.try_into().unwrap());
+                        if child_offset != 0 {
+                            println!("    direct_offset[{}] = {}", i, child_offset);
+                        }
+                    }
+                }
+                NodeType::N256_LEAF => {
+                    // Format: [32 byte bitmap]
+                    println!("  -> Bitmap (32 bytes): [showing set bits]");
+                    for byte_idx in 0..32 {
+                        let bitmap_byte = self.data[children_start + byte_idx];
+                        if bitmap_byte != 0 {
+                            for bit_idx in 0..8 {
+                                if (bitmap_byte & (1u8 << bit_idx)) != 0 {
+                                    let key_value = byte_idx * 8 + bit_idx;
+                                    println!("    bit[{}] set (key={})", key_value, key_value);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    println!("  -> Unknown node type, skipping children details");
+                }
+            }
 
             let children_size = match header.node_type {
                 NodeType::N48_INTERNAL => 256 + children_len * 4,
