@@ -39,8 +39,8 @@
 //!
 //! #### N256 Internal Nodes
 //! ```text
-//! [Header][Prefix][Direct Offsets: 256 * 4 bytes]
-//! Direct lookup where each 4-byte slot contains the child offset for that byte value
+//! [Header][Prefix][Slope: 4 bytes][Intercept: 4 bytes][Differences: 256 * 2 bytes]
+//! Linear compression format where actual_offset = slope * sequential_index + intercept + difference
 //! ```
 //!
 //! #### N4/N16 Leaf Nodes:
@@ -663,14 +663,13 @@ where
                         stats.n256_internal_accesses += 1;
                     }
 
-                    // O(1) direct lookup: direct_array[key] gives node index
-                    let direct_index_offset = children_start + next_key_byte as usize * 4;
-                    let node_index = u32::from_le_bytes(
-                        self.data[direct_index_offset..direct_index_offset + 4]
-                            .try_into()
-                            .unwrap(),
+                    // Read difference for this key (compressed format)
+                    let diff_offset = children_start + 8 + next_key_byte as usize * 2;
+                    let difference = i16::from_le_bytes(
+                        self.data[diff_offset..diff_offset + 2].try_into().unwrap()
                     );
-                    if node_index != 0 {
+
+                    if difference != i16::MIN {
                         found_child = Some(next_key_byte as usize); // Use key as dummy index
                     }
                 }
@@ -724,14 +723,31 @@ where
                             }
                         }
                         NodeType::N256_INTERNAL => {
-                            // For N256_INTERNAL, we read the node_offset directly
-                            let direct_offset_location =
-                                children_start + next_key_byte as usize * 4;
-                            let next_node_offset = u32::from_le_bytes(
-                                self.data[direct_offset_location..direct_offset_location + 4]
-                                    .try_into()
-                                    .unwrap(),
-                            ) as usize;
+                            // For N256_INTERNAL, calculate the offset using the slope and intercept
+                            let slope = u32::from_le_bytes(
+                                self.data[children_start..children_start + 4].try_into().unwrap()
+                            );
+                            let intercept = u32::from_le_bytes(
+                                self.data[children_start + 4..children_start + 8].try_into().unwrap()
+                            );
+                            
+                            // Read difference for this key
+                            let diff_offset = children_start + 8 + next_key_byte as usize * 2;
+                            let difference = i16::from_le_bytes(
+                                self.data[diff_offset..diff_offset + 2].try_into().unwrap()
+                            ) as i32;
+
+                            if difference > i16::MAX as i32 || difference < i16::MIN as i32 {
+                                panic!("Difference is greater than i16::MAX. Should not happen.");
+                            }
+                            if difference == i16::MIN as i32 {
+                                // No child at this key
+                                return false;
+                            }
+
+                            // Reconstruct the actual offset using direct indexing
+                            let predicted_offset = slope * next_key_byte as u32 + intercept;
+                            let next_node_offset = (predicted_offset as i32 + difference) as usize;
 
                             if next_node_offset == 0 {
                                 // Found stored value at this position
@@ -794,7 +810,7 @@ where
             let children_size = match header.node_type {
                 NodeType::N48_INTERNAL => 256 + children_len * 4,
                 NodeType::N48_LEAF => 32, // 32-byte bitmap
-                NodeType::N256_INTERNAL => 256 * 4,
+                NodeType::N256_INTERNAL => 8 + 256 * 2, // slope + intercept + differences
                 NodeType::N256_LEAF => 32, // 32-byte bitmap
                 NodeType::N4_LEAF | NodeType::N16_LEAF => children_len,
                 _ => children_len * 5, // N4/N16 internal: key + offset pairs
@@ -823,7 +839,7 @@ where
             let children_size = match header.node_type {
                 NodeType::N48_INTERNAL => 256 + children_len * 4,
                 NodeType::N48_LEAF => 32, // 32-byte bitmap
-                NodeType::N256_INTERNAL => 256 * 4,
+                NodeType::N256_INTERNAL => 8 + 256 * 2, // slope + intercept + differences
                 NodeType::N256_LEAF => 32, // 32-byte bitmap
                 NodeType::N4_LEAF | NodeType::N16_LEAF => children_len,
                 _ => children_len * 5, // key + offset pairs
@@ -931,7 +947,7 @@ where
                 }
                 NodeType::N256_INTERNAL => {
                     stats.n256_internal_count += 1;
-                    stats.children_bytes += 256 * 4; // 256 * 4 bytes direct offsets
+                    stats.children_bytes += 8 + 256 * 2; // slope + intercept + differences
                     stats.total_children += children_len;
                 }
                 _ => {}
@@ -947,7 +963,7 @@ where
             let children_size = match header.node_type {
                 NodeType::N48_INTERNAL => 256 + children_len * 4,
                 NodeType::N48_LEAF => 32, // 32-byte bitmap
-                NodeType::N256_INTERNAL => 256 * 4,
+                NodeType::N256_INTERNAL => 8 + 256 * 2, // slope + intercept + differences
                 NodeType::N256_LEAF => 32, // 32-byte bitmap
                 NodeType::N4_LEAF | NodeType::N16_LEAF => children_len,
                 _ => children_len * 5, // key + offset pairs
